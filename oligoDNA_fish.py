@@ -1,11 +1,10 @@
 import os
 import cv2
 import csv
-import numpy as np
 import tifffile
-from cellpose import models, utils
-import matplotlib.pyplot as plt
+import numpy as np
 from skimage import measure
+from cellpose import models, utils
 
 import warnings
 warnings.filterwarnings("ignore") # Suppress warnings for cleaner output
