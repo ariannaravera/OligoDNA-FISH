@@ -44,6 +44,3 @@ if __name__ == '__main__':
 ## Notes
 - To adjust spot segmentation threshold, modify the `cv2.threshold` value in `mask_spots()`.
 - Adjust Cellpose model parameters to optimize segmentation results.
-
-## Author
-Arianna Ravera
