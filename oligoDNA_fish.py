@@ -3,6 +3,7 @@ import cv2
 import csv
 import tifffile
 import numpy as np
+from tqdm import tqdm
 from skimage import measure
 from cellpose import models, utils
 
@@ -152,7 +153,7 @@ def save_complete_image(cells_im, locus1_norm, locus2_norm, cells_mask, locus1_m
     tifffile.imwrite(os.path.join(output_path, f'{fname}_all.tif'), stack_all, imagej=True)
 
 
-def locus_analysis(cells_mask, locus1_mask, locus2_mask, otherch_flag, otherch_im, cell_id, output_image, mm_to_px, output_path, fname):
+def locus_analysis(cells_mask, locus1_mask, locus2_mask, neurons_ch_flag, neurons_ch_im, cell_id, output_image, mm_to_px, output_path, fname):
     """
     Analysis of the locus in the image-
 
@@ -160,7 +161,7 @@ def locus_analysis(cells_mask, locus1_mask, locus2_mask, otherch_flag, otherch_i
         cells_mask (numpy.ndarray): 3D cells mask cleaned.
         locus1_mask (numpy.ndarray): 3D locus1 mask.
         locus2_mask (numpy.ndarray): 3D locus2 mask.
-        otherch_im (numpy.ndarray): 3D mask of the 4th channel if exists, otherwise None.
+        neurons_ch_im (numpy.ndarray): 3D mask of the 4th channel if exists, otherwise None.
         cell_id (int): id of the interested cell to clean
         output_image (numpy.ndarray): final 3D image with the valid cells.
         mm_to_px (float): micron to pixel conversion value.
@@ -180,15 +181,15 @@ def locus_analysis(cells_mask, locus1_mask, locus2_mask, otherch_flag, otherch_i
         masked_l1 = cv2.bitwise_and(locus1_mask, locus1_mask, mask=cell_mask)
         masked_l2 = cv2.bitwise_and(locus2_mask, locus2_mask, mask=cell_mask)
         
-        # If there is the 4th channel -> analyse its precence in the cell
-        if otherch_flag:
-            otherch_ispresent = False
-            tot_value = np.average(otherch_im[np.nonzero(otherch_im)])
-            masked_im4 = cv2.bitwise_and(otherch_im, otherch_im, mask=cell_mask)
+        # If there is the 4th channel -> analyse its presence in the cell
+        if neurons_ch_flag:
+            neurons_ch_ispresent = False
+            tot_value = np.average(neurons_ch_im[np.nonzero(neurons_ch_im)])
+            masked_im4 = cv2.bitwise_and(neurons_ch_im, neurons_ch_im, mask=cell_mask)
             for z in cell_zlayers:
                 cell_value = np.average(masked_im4[z][np.nonzero(masked_im4[z])])
                 if cell_value > tot_value:
-                    otherch_ispresent = True
+                    neurons_ch_ispresent = True
 
         # Select z where there is max 1 spot detected
         l1_zlayers = [z for z in cell_zlayers if len(np.unique(masked_l1[z])) <= 2]
@@ -212,7 +213,7 @@ def locus_analysis(cells_mask, locus1_mask, locus2_mask, otherch_flag, otherch_i
                 outlines = utils.masks_to_outlines(cell_mask[z])
                 outX, outY = np.nonzero(outlines)
                 output_image[z, outX, outY, :] = np.array([0, 153, 255])
-                if otherch_flag and otherch_ispresent:
+                if neurons_ch_flag and neurons_ch_ispresent:
                     output_image[z, outX-2, outY-2, :] = np.array([255,255,0])
                 cv2.putText(output_image[z,:,:,:], '{}'.format(int(cell_id)), (int(np.average(np.nonzero(cell_mask[z])[1])), int(np.average(np.nonzero(cell_mask[z])[0]))), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 153, 255), 1)
                 
@@ -259,20 +260,32 @@ def locus_analysis(cells_mask, locus1_mask, locus2_mask, otherch_flag, otherch_i
 
                     spots_distance = np.linalg.norm(np.array((l1_z, l1_x, l1_y)) - np.array((l2_z, l2_x, l2_y)))
 
+                    # Calculate max cell diameter
+                    diams = []
+                    for z in cell_zlayers:
+                        # Find contours
+                        contours, _ = cv2.findContours(cell_mask[z], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        # Get the largest contour (assuming it's the circular object)
+                        largest_contour = max(contours, key=cv2.contourArea)
+                        # Find the minimum enclosing circle
+                        (x, y), radius = cv2.minEnclosingCircle(largest_contour)
+                        diameter = 2 * radius
+                        diams.append(round(diameter, 2))
+
                     # Save the results in the .csv file
-                    if otherch_flag:
+                    if neurons_ch_flag:
                         with open(os.path.join(output_path, fname+'.csv'), "a") as file:
                             writer = csv.writer(file)
-                            writer.writerow([cell_id, round(spots_distance/mm_to_px,2), round(min_l1_dist/mm_to_px,2), round(min_l2_dist/mm_to_px,2), otherch_ispresent])
+                            writer.writerow([cell_id, round(spots_distance/mm_to_px,2), round(min_l1_dist/mm_to_px,2), round(min_l2_dist/mm_to_px,2), round(np.max(diams)/mm_to_px,2), neurons_ch_ispresent])
                     else:
                         with open(os.path.join(output_path, fname+'.csv'), "a") as file:
                             writer = csv.writer(file)
-                            writer.writerow([cell_id, round(spots_distance/mm_to_px,2), round(min_l1_dist/mm_to_px,2), round(min_l2_dist/mm_to_px,2)])
+                            writer.writerow([cell_id, round(spots_distance/mm_to_px,2), round(min_l1_dist/mm_to_px,2), round(min_l2_dist/mm_to_px,2), round(np.max(diams)/mm_to_px,2)])
         
     return output_image
 
 
-def main(output_path, image_name, cells_ch_pos, locus1_ch_pos, locus2_ch_pos, avg_cells_size, other_ch_pos, cellpose_model_path):
+def main(output_path, image_name, cells_ch_pos, locus1_ch_pos, locus2_ch_pos, avg_cells_size, neurons_ch_pos, cellpose_model_path):
     
     # Read file name
     fname = os.path.basename(image_name).split('.')[0]
@@ -280,14 +293,14 @@ def main(output_path, image_name, cells_ch_pos, locus1_ch_pos, locus2_ch_pos, av
     print('Processing image: '+os.path.basename(image_name).split('.')[0])
 
     # Create .csv output file
-    if other_ch_pos != None:
+    if neurons_ch_pos != None:
         with open(os.path.join(output_path, fname+'.csv'), "w") as file:
             writer = csv.writer(file)
-            writer.writerow(['cell ID', 'spots distance[µm]', 'min locus1-wall distance[µm]', 'min locus2-wall distance[µm]', '4th ch'])
+            writer.writerow(['cell ID', 'spots distance[µm]', 'min locus1-wall distance[µm]', 'min locus2-wall distance[µm]', 'max cell diameter[µm]', '4th ch'])
     else:
         with open(os.path.join(output_path, fname+'.csv'), "w") as file:
             writer = csv.writer(file)
-            writer.writerow(['cell ID', 'spots distance[µm]', 'min locus1-wall distance[µm]', 'min locus2-wall distance[µm]'])
+            writer.writerow(['cell ID', 'spots distance[µm]', 'min locus1-wall distance[µm]', 'min locus2-wall distance[µm]', 'max cell diameter[µm]'])
 
     # Read image resolution, microns to pixel value
     with tifffile.TiffFile(image_name) as tif:
@@ -313,30 +326,30 @@ def main(output_path, image_name, cells_ch_pos, locus1_ch_pos, locus2_ch_pos, av
     locus2_mask = mask_spots(locus2_norm, output_path, fname, 'l2')
 
     # If there if a 4th channel to analyse, read it
-    otherch_im = None
-    otherch_flag = False
-    if other_ch_pos != None:
-        otherch_flag = True
-        otherch_im = image[:,other_ch_pos,:,:]
-        otherch_im = cv2.normalize(otherch_im, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+    neurons_ch_im = None
+    neurons_ch_flag = False
+    if neurons_ch_pos != None:
+        neurons_ch_flag = True
+        neurons_ch_im = image[:,neurons_ch_pos,:,:]
+        neurons_ch_im = cv2.normalize(neurons_ch_im, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
 
     # Save the final image to visualize all the masks together
-    #save_complete_image(cells_im, locus1_norm, locus2_norm, otherch_im, cells_mask, locus1_mask, locus2_mask, output_path, fname)
+    #save_complete_image(cells_im, locus1_norm, locus2_norm, neurons_ch_im, cells_mask, locus1_mask, locus2_mask, output_path, fname)
 
     # Initialize the final image to visualize only the valid masks
     output_image = np.zeros((cells_im.shape[0], cells_im.shape[1], cells_im.shape[2], 3), dtype=np.uint8)    
     output_image[:, :, :, 0] = locus1_norm
     output_image[:, :, :, 1] = locus2_norm
     output_image[:, :, :, 2] = cells_im
-    if otherch_flag:
-        output_image[:, :, :, 0] += otherch_im
-        output_image[:, :, :, 1] += otherch_im
+    if neurons_ch_flag:
+        output_image[:, :, :, 0] += neurons_ch_im
+        output_image[:, :, :, 1] += neurons_ch_im
 
     # Analyse spots in locus image for each cell detected
     print('# Analysing spots')
-    for cell_id in [i for i in list(np.unique(cells_mask)) if i > 0]:
+    for cell_id in tqdm([i for i in list(np.unique(cells_mask)) if i > 0]):
         # Analyse locus into the cell mask
-        output_image = locus_analysis(cells_mask, locus1_mask, locus2_mask, otherch_flag, otherch_im, cell_id, output_image, mm_to_px, output_path, fname)
+        output_image = locus_analysis(cells_mask, locus1_mask, locus2_mask, neurons_ch_flag, neurons_ch_im, cell_id, output_image, mm_to_px, output_path, fname)
 
     # Save the final image to visualize only the valid masks
     tifffile.imwrite(os.path.join(output_path,fname+'_masked.tif'), output_image, imagej=True)  
@@ -363,7 +376,7 @@ if __name__ == '__main__':
     ## ADDITIONAL VARIABLES ##
 
     # If exists, define position of the 4th channel, otherwise None
-    other_ch_pos = None
+    neurons_ch_pos = None
 
     # Define cellpose retrained model path, otherwise None
     cellpose_model_path = 'retrained-cellpose-model-path'
@@ -374,4 +387,4 @@ if __name__ == '__main__':
 
     # Process all the files in input_path that have .tif extention
     for image_name in [f for f in os.listdir(input_path) if '.tif' in f]:
-        main(output_path, os.path.join(input_path, image_name), cells_ch_pos, locus1_ch_pos, locus2_ch_pos, avg_cells_size, other_ch_pos, cellpose_model_path)
+        main(output_path, os.path.join(input_path, image_name), cells_ch_pos, locus1_ch_pos, locus2_ch_pos, avg_cells_size, neurons_ch_pos, cellpose_model_path)
